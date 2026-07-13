@@ -1,10 +1,10 @@
 use lettre::{
-    message::{
-        header::{ContentDisposition, ContentId, ContentType},
-        Mailbox, MultiPart, SinglePart,
-    },
-    transport::smtp::{authentication::Credentials, AsyncSmtpTransport},
     AsyncTransport, Message,
+    message::{
+        Mailbox, MultiPart, SinglePart,
+        header::{ContentDisposition, ContentId, ContentType},
+    },
+    transport::smtp::{AsyncSmtpTransport, authentication::Credentials},
 };
 
 use crate::backend::{AccountConfig, OutgoingEmail, SecurityMode};
@@ -132,8 +132,7 @@ fn build_mime(email: &OutgoingEmail) -> Result<MultiPart, MailError> {
 
     // 附件
     for att in &email.attachments {
-        let content_type = ContentType::parse(&att.mime_type)
-            .unwrap_or(ContentType::TEXT_PLAIN);
+        let content_type = ContentType::parse(&att.mime_type).unwrap_or(ContentType::TEXT_PLAIN);
 
         let mut part_builder = SinglePart::builder()
             .header(content_type)

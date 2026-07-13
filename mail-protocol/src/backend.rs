@@ -245,11 +245,7 @@ pub trait MailBackend: Send + Sync {
     // ---- 邮件内容 ----
 
     /// 获取指定邮件的完整内容 (含正文和附件元信息)
-    async fn fetch_message(
-        &self,
-        folder: &str,
-        uid: u32,
-    ) -> Result<Email, MailError>;
+    async fn fetch_message(&self, folder: &str, uid: u32) -> Result<Email, MailError>;
 
     /// 下载指定附件的原始内容
     async fn fetch_attachment(

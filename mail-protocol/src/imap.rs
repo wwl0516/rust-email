@@ -1,11 +1,11 @@
 use async_imap::{
-    types::{Fetch, Flag, Name},
     Client as ImapClientInner, Session as ImapSessionInner,
+    types::{Fetch, Flag, Name},
 };
 use async_native_tls::{TlsConnector, TlsStream};
 use futures::StreamExt;
 use imap_proto::types::Address;
-use mailparse::{parse_content_disposition, parse_mail, ParsedMail};
+use mailparse::{ParsedMail, parse_content_disposition, parse_mail};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -122,8 +122,7 @@ impl MailBackend for MailClient {
 
         let mut folders = Vec::new();
         while let Some(item) = stream.next().await {
-            let name: Name =
-                item.map_err(|e| MailError::Protocol(format!("LIST stream: {e}")))?;
+            let name: Name = item.map_err(|e| MailError::Protocol(format!("LIST stream: {e}")))?;
             folders.push(Folder {
                 name: name.name().to_string(),
                 delimiter: name.delimiter().unwrap_or("").to_string(),
@@ -323,7 +322,11 @@ impl MailBackend for MailClient {
         select_mailbox(session, folder).await?;
 
         let uid_list = join_uids(uids);
-        let flag_list = flags.iter().map(mail_flag_to_imap).collect::<Vec<_>>().join(" ");
+        let flag_list = flags
+            .iter()
+            .map(mail_flag_to_imap)
+            .collect::<Vec<_>>()
+            .join(" ");
         let query = format!("+FLAGS ({flag_list})");
 
         drain_store(session, &uid_list, &query).await
@@ -340,7 +343,11 @@ impl MailBackend for MailClient {
         select_mailbox(session, folder).await?;
 
         let uid_list = join_uids(uids);
-        let flag_list = flags.iter().map(mail_flag_to_imap).collect::<Vec<_>>().join(" ");
+        let flag_list = flags
+            .iter()
+            .map(mail_flag_to_imap)
+            .collect::<Vec<_>>()
+            .join(" ");
         let query = format!("-FLAGS ({flag_list})");
 
         drain_store(session, &uid_list, &query).await
@@ -431,10 +438,7 @@ impl MailBackend for MailClient {
 
 use async_imap::types::Mailbox;
 
-async fn select_mailbox(
-    session: &mut ImapSession,
-    folder: &str,
-) -> Result<Mailbox, MailError> {
+async fn select_mailbox(session: &mut ImapSession, folder: &str) -> Result<Mailbox, MailError> {
     session
         .select(folder)
         .await
@@ -453,8 +457,7 @@ async fn fetch_summaries_by_seq(
 
     let mut summaries = Vec::new();
     while let Some(result) = stream.next().await {
-        let fetch: Fetch =
-            result.map_err(|e| MailError::Protocol(format!("fetch: {e}")))?;
+        let fetch: Fetch = result.map_err(|e| MailError::Protocol(format!("fetch: {e}")))?;
         summaries.push(build_summary(&fetch));
     }
 
@@ -474,8 +477,7 @@ async fn fetch_summaries_by_uid(
 
     let mut summaries = Vec::new();
     while let Some(result) = stream.next().await {
-        let fetch: Fetch =
-            result.map_err(|e| MailError::Protocol(format!("fetch: {e}")))?;
+        let fetch: Fetch = result.map_err(|e| MailError::Protocol(format!("fetch: {e}")))?;
         summaries.push(build_summary(&fetch));
     }
 
@@ -504,7 +506,9 @@ fn build_summary(fetch: &Fetch) -> EmailSummary {
 
     EmailSummary {
         uid: fetch.uid.unwrap_or(0),
-        message_id: envelope.and_then(|e| e.message_id.as_ref()).map(bytes_to_string),
+        message_id: envelope
+            .and_then(|e| e.message_id.as_ref())
+            .map(bytes_to_string),
         from: envelope
             .and_then(|e| e.from.as_ref())
             .map(|a| a.iter().map(format_addr).collect::<Vec<_>>().join(", "))
@@ -513,12 +517,9 @@ fn build_summary(fetch: &Fetch) -> EmailSummary {
             .and_then(|e| e.to.as_ref())
             .map(|a| a.iter().map(format_addr).collect::<Vec<_>>().join(", "))
             .unwrap_or_default(),
-        cc: envelope.and_then(|e| e.cc.as_ref()).map(|a| {
-            a.iter()
-                .map(format_addr)
-                .collect::<Vec<_>>()
-                .join(", ")
-        }),
+        cc: envelope
+            .and_then(|e| e.cc.as_ref())
+            .map(|a| a.iter().map(format_addr).collect::<Vec<_>>().join(", ")),
         subject: envelope
             .and_then(|e| e.subject.as_ref())
             .map(bytes_to_string)
@@ -535,7 +536,11 @@ fn build_summary(fetch: &Fetch) -> EmailSummary {
 
 fn format_addr(addr: &Address<'_>) -> String {
     let name = addr.name.as_ref().map(bytes_to_string);
-    let mailbox = addr.mailbox.as_ref().map(bytes_to_string).unwrap_or_default();
+    let mailbox = addr
+        .mailbox
+        .as_ref()
+        .map(bytes_to_string)
+        .unwrap_or_default();
     let host = addr.host.as_ref().map(bytes_to_string).unwrap_or_default();
 
     if !mailbox.is_empty() && !host.is_empty() {
@@ -565,7 +570,10 @@ fn split_addr_list(raw: &str) -> Vec<String> {
     if raw.is_empty() {
         return Vec::new();
     }
-    raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn extract_body_text(parsed: &ParsedMail<'_>) -> Option<String> {
