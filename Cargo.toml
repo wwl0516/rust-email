@@ -1,3 +1,9 @@
+[workspace]
+members = [
+    ".",
+    "mail-protocol",
+]
+
 [package]
 name = "rust-email"
 version = "0.1.0"
@@ -10,6 +16,7 @@ build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+mail-protocol = { path = "./mail-protocol" }
 better-panic = "0.3.0"
 clap = { version = "4.6.1", features = [
     "derive",

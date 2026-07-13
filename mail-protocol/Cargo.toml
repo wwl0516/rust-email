@@ -1,0 +1,29 @@
+[package]
+name = "mail-protocol"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+# 异步流处理
+futures = "0.3"
+
+# IMAP
+async-imap = "0.9"
+async-native-tls = "0.5"
+imap-proto = "0.16"
+tokio = { version = "1", features = ["net", "sync", "macros", "io-util"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# MIME 解析
+mailparse = "0.15"
+
+# SMTP
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "tokio1-native-tls",
+] }
