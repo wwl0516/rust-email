@@ -6,7 +6,7 @@ use tracing::{debug, info};
 
 use crate::{
     action::Action,
-    components::{Component, fps::FpsCounter, home::Home},
+    components::{Component, fps::FpsCounter, home::Home, status_bar::StatusBar},
     config::Config,
     tui::{Event, Tui},
 };
@@ -16,6 +16,7 @@ pub struct App {
     tick_rate: f64,
     frame_rate: f64,
     components: Vec<Box<dyn Component>>,
+    status_bar: StatusBar,
     should_quit: bool,
     should_suspend: bool,
     mode: Mode,
@@ -26,8 +27,17 @@ pub struct App {
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mode {
+    /// 首页 / 账户管理
     #[default]
     Home,
+    // 文件夹列表
+    FolderList,
+    // 邮件列表
+    MailList,
+    // 邮件阅读
+    MailView,
+    // 写邮件
+    Compose,
 }
 
 impl App {
@@ -37,6 +47,7 @@ impl App {
             tick_rate,
             frame_rate,
             components: vec![Box::new(Home::new()), Box::new(FpsCounter::default())],
+            status_bar: StatusBar::new(),
             should_quit: false,
             should_suspend: false,
             config: Config::new()?,
@@ -57,12 +68,17 @@ impl App {
         for component in self.components.iter_mut() {
             component.register_action_handler(self.action_tx.clone())?;
         }
+        self.status_bar.register_action_handler(self.action_tx.clone())?;
+
         for component in self.components.iter_mut() {
             component.register_config_handler(self.config.clone())?;
         }
+        self.status_bar.register_config_handler(self.config.clone())?;
+
         for component in self.components.iter_mut() {
             component.init(tui.size()?)?;
         }
+        self.status_bar.init(tui.size()?)?;
 
         let action_tx = self.action_tx.clone();
         loop {
@@ -151,6 +167,9 @@ impl App {
                     self.action_tx.send(action)?
                 };
             }
+            if let Some(action) = self.status_bar.update(action.clone())? {
+                self.action_tx.send(action)?
+            };
         }
         Ok(())
     }
@@ -169,6 +188,12 @@ impl App {
                         .action_tx
                         .send(Action::Error(format!("Failed to draw: {:?}", err)));
                 }
+            }
+            // StatusBar 在最后绘制，覆盖底部区域
+            if let Err(err) = self.status_bar.draw(frame, frame.area()) {
+                let _ = self
+                    .action_tx
+                    .send(Action::Error(format!("StatusBar draw error: {:?}", err)));
             }
         })?;
         Ok(())
