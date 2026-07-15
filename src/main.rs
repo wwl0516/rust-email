@@ -8,6 +8,7 @@ mod app;
 mod cli;
 mod components;
 mod config;
+mod database;
 mod errors;
 mod logging;
 mod tui;
@@ -18,6 +19,7 @@ async fn main() -> color_eyre::Result<()> {
     crate::logging::init()?;
 
     let args = Cli::parse();
+    let _database = database::connect(&config::get_data_dir().join("rust-email.db")).await?;
     let mut app = App::new(args.tick_rate, args.frame_rate)?;
     app.run().await?;
     Ok(())
