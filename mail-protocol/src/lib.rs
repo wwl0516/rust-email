@@ -5,3 +5,4 @@ pub mod smtp;
 
 pub use backend::*;
 pub use error::MailError;
+pub use imap::MailClient;

@@ -1,12 +1,18 @@
 use crossterm::event::KeyEvent;
+use mail_protocol::{MailBackend, MailClient};
 use ratatui::prelude::Rect;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
+use mail_protocol::AccountConfig;
+
 use crate::{
     action::Action,
-    components::{Component, fps::FpsCounter, home::Home, status_bar::StatusBar},
+    components::{
+        account_form::AccountForm, folder_list::FolderList, fps::FpsCounter, home::Home,
+        mail_list::MailList, mail_view::MailView, status_bar::StatusBar, Component,
+    },
     config::Config,
     tui::{Event, Tui},
 };
@@ -15,11 +21,29 @@ pub struct App {
     config: Config,
     tick_rate: f64,
     frame_rate: f64,
-    components: Vec<Box<dyn Component>>,
+
+    // 组件
+    home: Home,
+    account_form: AccountForm,
+    folder_list: FolderList,
+    mail_list: MailList,
+    mail_view: MailView,
+    fps_counter: FpsCounter,
     status_bar: StatusBar,
+
+    // 状态
     should_quit: bool,
     should_suspend: bool,
     mode: Mode,
+    connecting: bool,
+
+    // 内存账户管理
+    accounts: Vec<AccountConfig>,
+
+    // 邮件客户端
+    mail_client: MailClient,
+
+    // 事件系统
     last_tick_key_events: Vec<KeyEvent>,
     action_tx: mpsc::UnboundedSender<Action>,
     action_rx: mpsc::UnboundedReceiver<Action>,
@@ -27,31 +51,42 @@ pub struct App {
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mode {
-    /// 首页 / 账户管理
+    /// 首页 / 账户列表
     #[default]
     Home,
-    // 文件夹列表
+    /// 添加账户表单
+    AccountForm,
+    /// 文件夹列表
     FolderList,
-    // 邮件列表
+    /// 邮件列表
     MailList,
-    // 邮件阅读
+    /// 邮件阅读
     MailView,
-    // 写邮件
+    /// 写邮件
     Compose,
 }
 
 impl App {
     pub fn new(tick_rate: f64, frame_rate: f64) -> color_eyre::Result<Self> {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
+
         Ok(Self {
             tick_rate,
             frame_rate,
-            components: vec![Box::new(Home::new()), Box::new(FpsCounter::default())],
+            home: Home::new(),
+            account_form: AccountForm::new(),
+            folder_list: FolderList::new(),
+            mail_list: MailList::new(),
+            mail_view: MailView::new(),
+            fps_counter: FpsCounter::default(),
             status_bar: StatusBar::new(),
             should_quit: false,
             should_suspend: false,
             config: Config::new()?,
             mode: Mode::Home,
+            connecting: false,
+            accounts: Vec::new(),
+            mail_client: MailClient::new(),
             last_tick_key_events: Vec::new(),
             action_tx,
             action_rx,
@@ -60,35 +95,25 @@ impl App {
 
     pub async fn run(&mut self) -> color_eyre::Result<()> {
         let mut tui = Tui::new()?
-            // .mouse(true) // uncomment this line to enable mouse support
             .tick_rate(self.tick_rate)
             .frame_rate(self.frame_rate);
         tui.enter()?;
 
-        for component in self.components.iter_mut() {
-            component.register_action_handler(self.action_tx.clone())?;
-        }
-        self.status_bar.register_action_handler(self.action_tx.clone())?;
-
-        for component in self.components.iter_mut() {
-            component.register_config_handler(self.config.clone())?;
-        }
-        self.status_bar.register_config_handler(self.config.clone())?;
-
-        for component in self.components.iter_mut() {
-            component.init(tui.size()?)?;
-        }
+        self.status_bar
+            .register_action_handler(self.action_tx.clone())?;
+        self.status_bar
+            .register_config_handler(self.config.clone())?;
         self.status_bar.init(tui.size()?)?;
+        self.status_bar.set_mode(self.mode);
 
         let action_tx = self.action_tx.clone();
         loop {
             self.handle_events(&mut tui).await?;
-            self.handle_actions(&mut tui)?;
+            self.handle_actions(&mut tui).await?;
             if self.should_suspend {
                 tui.suspend()?;
                 action_tx.send(Action::Resume)?;
                 action_tx.send(Action::ClearScreen)?;
-                // tui.mouse(true);
                 tui.enter()?;
             } else if self.should_quit {
                 tui.stop()?;
@@ -97,6 +122,18 @@ impl App {
         }
         tui.exit()?;
         Ok(())
+    }
+
+    /// 返回当前 mode 对应的主组件
+    fn active_component(&mut self) -> &mut dyn Component {
+        match self.mode {
+            Mode::Home => &mut self.home,
+            Mode::AccountForm => &mut self.account_form,
+            Mode::FolderList => &mut self.folder_list,
+            Mode::MailList => &mut self.mail_list,
+            Mode::MailView => &mut self.mail_view,
+            Mode::Compose => &mut self.fps_counter,
+        }
     }
 
     async fn handle_events(&mut self, tui: &mut Tui) -> color_eyre::Result<()> {
@@ -112,10 +149,9 @@ impl App {
             Event::Key(key) => self.handle_key_event(key)?,
             _ => {}
         }
-        for component in self.components.iter_mut() {
-            if let Some(action) = component.handle_events(Some(event.clone()))? {
-                action_tx.send(action)?;
-            }
+        // 只将事件分发给当前 mode 的组件
+        if let Some(action) = self.active_component().handle_events(Some(event.clone()))? {
+            action_tx.send(action)?;
         }
         Ok(())
     }
@@ -131,11 +167,7 @@ impl App {
                 action_tx.send(action.clone())?;
             }
             _ => {
-                // If the key was not handled as a single key action,
-                // then consider it for multi-key combinations.
                 self.last_tick_key_events.push(key);
-
-                // Check for multi-key combinations
                 if let Some(action) = keymap.get(&self.last_tick_key_events) {
                     info!("Got action: {action:?}");
                     action_tx.send(action.clone())?;
@@ -145,35 +177,194 @@ impl App {
         Ok(())
     }
 
-    fn handle_actions(&mut self, tui: &mut Tui) -> color_eyre::Result<()> {
+    async fn handle_actions(&mut self, tui: &mut Tui) -> color_eyre::Result<()> {
         while let Ok(action) = self.action_rx.try_recv() {
             if action != Action::Tick && action != Action::Render {
                 debug!("{action:?}");
             }
-            match action {
+            match &action {
+                // ── 系统动作 ──
                 Action::Tick => {
                     self.last_tick_key_events.drain(..);
                 }
                 Action::Quit => self.should_quit = true,
                 Action::Suspend => self.should_suspend = true,
                 Action::Resume => self.should_suspend = false,
-                Action::ClearScreen => tui.terminal.clear()?,
-                Action::Resize(w, h) => self.handle_resize(tui, w, h)?,
-                Action::Render => self.render(tui)?,
+                Action::ClearScreen => {
+                    let _ = tui.terminal.clear();
+                }
+                Action::Resize(_, _) => {}
+                Action::Render => {
+                    self.render(tui)?;
+                    // 更新组件
+                    self.fps_counter.update(Action::Render)?;
+                }
+
+                // ── 账户管理 ──
+                Action::AddAccount => {
+                    self.switch_mode(Mode::AccountForm);
+                }
+                Action::SaveAccount => {
+                    if let Some(data) = self.account_form.get_data() {
+                        let config = AccountConfig {
+                            imap_host: data.imap_host,
+                            imap_port: data.imap_port,
+                            smtp_host: data.smtp_host,
+                            smtp_port: data.smtp_port,
+                            username: data.username,
+                            password: data.password,
+                            security: match data.security.as_str() {
+                                "start_tls" => mail_protocol::SecurityMode::StartTls,
+                                "none" => mail_protocol::SecurityMode::None,
+                                _ => mail_protocol::SecurityMode::Tls,
+                            },
+                        };
+                        self.accounts.push(config);
+                        self.home.set_accounts(self.accounts.clone());
+                        info!("已添加账户");
+                    }
+                    self.switch_mode(Mode::Home);
+                }
+                Action::DeleteAccount => {
+                    if let Some(i) = self.home.selected_index() {
+                        if i < self.accounts.len() {
+                            self.accounts.remove(i);
+                            self.home.set_accounts(self.accounts.clone());
+                            info!("已删除账户");
+                        }
+                    }
+                }
+
+                // ── 连接管理 ──
+                Action::Connect if !self.connecting => {
+                    self.connecting = true;
+                    let config = match self.home.selected_index()
+                        .and_then(|i| self.accounts.get(i))
+                    {
+                        Some(c) => c.clone(),
+                        None => {
+                            self.connecting = false;
+                            self.action_tx.send(Action::ConnectionFailed("请先添加一个账户".into()))?;
+                            break;
+                        }
+                    };
+                    match self.mail_client.connect(&config).await {
+                        Ok(_) => {
+                            info!("IMAP 连接成功");
+                            self.connecting = false;
+                            self.action_tx.send(Action::Connected)?;
+                        }
+                        Err(e) => {
+                            self.connecting = false;
+                            self.action_tx
+                                .send(Action::ConnectionFailed(format!("连接失败: {e}")))?;
+                        }
+                    }
+                }
+                Action::Connected => {
+                    info!("已连接，获取文件夹列表...");
+                    match self.mail_client.list_folders().await {
+                        Ok(folders) => {
+                            info!("获取到 {} 个文件夹", folders.len());
+                            self.folder_list.set_folders(folders);
+                            self.switch_mode(Mode::FolderList);
+                        }
+                        Err(e) => {
+                            self.action_tx
+                                .send(Action::Error(format!("获取文件夹失败: {e}")))?;
+                        }
+                    }
+                }
+                Action::ConnectionFailed(_) => {}
+                Action::Disconnect => {
+                    let _ = self.mail_client.disconnect().await;
+                    self.switch_mode(Mode::Home);
+                }
+
+                // ── 文件夹 ──
+                Action::SelectFolder(name) => {
+                    self.mail_list.current_folder = name.clone();
+                    self.switch_mode(Mode::MailList);
+                    info!("获取文件夹 {} 的邮件...", name);
+                    match self.mail_client.fetch_latest_messages(name, 50).await {
+                        Ok(mails) => {
+                            info!("获取到 {} 封邮件", mails.len());
+                            self.mail_list.set_mails(mails);
+                        }
+                        Err(e) => {
+                            self.action_tx
+                                .send(Action::Error(format!("获取邮件失败: {e}")))?;
+                        }
+                    }
+                }
+                Action::RefreshFolders => {
+                    match self.mail_client.list_folders().await {
+                        Ok(folders) => {
+                            self.folder_list.set_folders(folders);
+                        }
+                        Err(e) => {
+                            self.action_tx
+                                .send(Action::Error(format!("刷新文件夹失败: {e}")))?;
+                        }
+                    }
+                }
+
+                // ── 邮件列表 ──
+                Action::LoadMails => {}
+                Action::ViewMail => {
+                    if let Some(uid) = self.mail_list.selected_uid() {
+                        self.switch_mode(Mode::MailView);
+                        let folder = self.mail_list.current_folder.clone();
+                        info!("获取邮件 UID={} 来自 {}", uid, folder);
+                        match self.mail_client.fetch_message(&folder, uid).await {
+                            Ok(mail) => {
+                                self.mail_view.set_mail(mail);
+                            }
+                            Err(e) => {
+                                self.action_tx
+                                    .send(Action::Error(format!("获取邮件失败: {e}")))?;
+                                self.switch_mode(Mode::MailList);
+                            }
+                        }
+                    }
+                }
+                Action::LoadMoreMails => {}
+                Action::NextMail | Action::PrevMail => {}
+
+                // ── 导航 ──
+                Action::Back => {
+                    let prev = match self.mode {
+                        Mode::AccountForm => Mode::Home,
+                        Mode::MailView => Mode::MailList,
+                        Mode::MailList => Mode::FolderList,
+                        Mode::FolderList => Mode::Home,
+                        Mode::Compose => Mode::MailList,
+                        _ => Mode::Home,
+                    };
+                    self.switch_mode(prev);
+                }
+
                 _ => {}
             }
-            for component in self.components.iter_mut() {
-                if let Some(action) = component.update(action.clone())? {
-                    self.action_tx.send(action)?
-                };
-            }
-            if let Some(action) = self.status_bar.update(action.clone())? {
-                self.action_tx.send(action)?
-            };
         }
+
+        // 每 Tick 更新活跃组件
+        if self.action_rx.is_empty() {
+            // 用 update 转发动作到活跃组件
+            let action = Action::Tick;
+            self.status_bar.update(action.clone())?;
+        }
+
         Ok(())
     }
 
+    fn switch_mode(&mut self, new_mode: Mode) {
+        self.mode = new_mode;
+        self.status_bar.set_mode(new_mode);
+        info!("切换到模式: {:?}", new_mode);
+    }
+
+    #[allow(dead_code)]
     fn handle_resize(&mut self, tui: &mut Tui, w: u16, h: u16) -> color_eyre::Result<()> {
         tui.resize(Rect::new(0, 0, w, h))?;
         self.render(tui)?;
@@ -182,14 +373,13 @@ impl App {
 
     fn render(&mut self, tui: &mut Tui) -> color_eyre::Result<()> {
         tui.draw(|frame| {
-            for component in self.components.iter_mut() {
-                if let Err(err) = component.draw(frame, frame.area()) {
-                    let _ = self
-                        .action_tx
-                        .send(Action::Error(format!("Failed to draw: {:?}", err)));
-                }
+            // 只渲染当前 mode 对应的主组件
+            if let Err(err) = self.active_component().draw(frame, frame.area()) {
+                let _ = self
+                    .action_tx
+                    .send(Action::Error(format!("Failed to draw: {:?}", err)));
             }
-            // StatusBar 在最后绘制，覆盖底部区域
+            // StatusBar 最后绘制
             if let Err(err) = self.status_bar.draw(frame, frame.area()) {
                 let _ = self
                     .action_tx

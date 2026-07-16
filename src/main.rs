@@ -15,6 +15,9 @@ mod tui;
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
+    // 自动加载 .env 文件（如果存在）
+    dotenvy::dotenv().ok();
+
     crate::errors::init()?;
     crate::logging::init()?;
 

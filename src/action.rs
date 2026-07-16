@@ -14,6 +14,14 @@ pub enum Action {
     Error(String),
     Help,
 
+    // ── 账户管理 ──
+    /// 添加新账户（切换到表单）
+    AddAccount,
+    /// 保存新账户
+    SaveAccount,
+    /// 删除选中账户
+    DeleteAccount,
+
     // ── 连接管理 ──
     // 连接到邮箱账户
     Connect,
